@@ -1,17 +1,63 @@
 package lca
 
 import (
+	"fmt"
 	"testing"
 
 	lcav1alpha1 "github.com/openshift-kni/lifecycle-agent/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/openshift-kni/eco-goinfra/pkg/clients"
 )
 
-func TestPullImageBasedUpgrade(t *testing.T) {
+var (
+	ibulGvk = schema.GroupVersionKind{
+		Group:   "lca.openshift.io",
+		Version: "v1alpha1",
+		Kind:    "ImageBasedUpgrade",
+	}
+)
+
+func TestImageBasedUpgradeWithOptions(t *testing.T) {
+
+	testSettings := buildTestClientWithDummyObject()
+	testBuilder, _ := PullImageBasedUpgrade(testSettings)
+	testBuilder = testBuilder.WithOptions(
+		func(builder *ImageBasedUpgradeBuilder) (*ImageBasedUpgradeBuilder, error) {
+			return builder, nil
+		})
+
+	assert.Equal(t, "", testBuilder.errorMsg)
+
+	testBuilder = testBuilder.WithOptions(
+		func(builder *ImageBasedUpgradeBuilder) (*ImageBasedUpgradeBuilder, error) {
+			return builder, fmt.Errorf("error")
+		})
+	assert.Equal(t, "error", testBuilder.errorMsg)
+}
+
+func buildTestClientWithDummyObject() *clients.Settings {
+	return clients.GetTestClients(clients.TestClientParams{
+		K8sMockObjects: buildDummyIBU(),
+		GVK:            []schema.GroupVersionKind{ibulGvk},
+	})
+}
+
+func buildDummyIBU() []runtime.Object {
+	return append([]runtime.Object{}, &lcav1alpha1.ImageBasedUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "upgrade",
+		},
+		Spec: lcav1alpha1.ImageBasedUpgradeSpec{
+			Stage: "Idle",
+		},
+	})
+}
+
+func TestImageBasedUpgradePull(t *testing.T) {
 	testCases := []struct {
 		expectedError       bool
 		addToRuntimeObjects bool
@@ -621,40 +667,59 @@ func TestImageBasedUpgradeWaitUntilStageComplete(t *testing.T) {
 	}
 }
 
-// #####
+func TestImageBasedUpgradeWithStage(t *testing.T) {
+	testCases := []struct {
+		expectedError       bool
+		addToRuntimeObjects bool
+		expectedErrorText   string
+		stage               string
+	}{
+		{
+			expectedError:       false,
+			addToRuntimeObjects: true,
+			stage:               "Idle",
+		},
+		{
+			expectedError:       false,
+			addToRuntimeObjects: true,
+			stage:               "Wrong",
+		},
+	}
 
-// func TestImageBasedUpgradeWaitUntilStageComplete(t *testing.T) {
-// 	generateTestDeployment := func() *appsv1.Deployment {
-// 		return &appsv1.Deployment{
-// 			ObjectMeta: metav1.ObjectMeta{
-// 				Name:      "test-name",
-// 				Namespace: "test-namespace",
-// 			},
-// 			Status: appsv1.DeploymentStatus{
-// 				Replicas:      1,
-// 				ReadyReplicas: 1,
-// 				Conditions: []appsv1.DeploymentCondition{
-// 					{
-// 						Type:   appsv1.DeploymentAvailable,
-// 						Status: corev1.ConditionTrue,
-// 					},
-// 				},
-// 			},
-// 		}
-// 	}
+	for _, testCase := range testCases {
+		var (
+			runtimeObjects []runtime.Object
+			testSettings   *clients.Settings
+		)
+		testIBU := generateImageBasedUpgrade()
 
-// 	var runtimeObjects []runtime.Object
+		if testCase.addToRuntimeObjects {
+			runtimeObjects = append(runtimeObjects, testIBU)
+		}
+		testSettings = clients.GetTestClients(clients.TestClientParams{
+			K8sMockObjects: runtimeObjects,
+		})
 
-// 	runtimeObjects = append(runtimeObjects, generateTestDeployment())
+		ibuBuilder, err := PullImageBasedUpgrade(testSettings)
+		assert.Nil(t, err)
 
-// 	testBuilder := buildTestBuilderWithFakeObjects(runtimeObjects)
+		// Test the WithExtraManifests function
+		builderResult := ibuBuilder.WithStage(
+			testCase.stage)
 
-// 	err := testBuilder.WaitUntilCondition(appsv1.DeploymentAvailable, time.Second*5)
+		// Check the error
+		if testCase.expectedError {
+			assert.NotNil(t, err)
 
-// 	assert.Nil(t, err)
-// }
-
-// ####
+			if testCase.expectedErrorText != "" {
+				assert.Equal(t, testCase.expectedErrorText, err.Error())
+			}
+		} else {
+			assert.Nil(t, err)
+			assert.NotNil(t, builderResult)
+		}
+	}
+}
 
 func generateImageBasedUpgrade() *lcav1alpha1.ImageBasedUpgrade {
 	return &lcav1alpha1.ImageBasedUpgrade{
